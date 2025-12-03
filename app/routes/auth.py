@@ -1,58 +1,61 @@
-"""
-Authentication routes - Member 1
-TODO: Implement these endpoints:
-1. POST /api/auth/register - Register new user
-2. POST /api/auth/login - Login and get JWT token
-3. GET /api/auth/me - Get current user info
-
-Reference: WORKFLOW.md Day 1-2 tasks for Member 1
-"""
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.models import User
+from app.schemas import UserCreate, UserRead, Token
+from app.utils.auth import create_access_token, get_current_user
 
-router = APIRouter()
 
-# TODO: Import necessary schemas
-# from app.schemas import UserCreate, User, Token
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# TODO: Import auth utilities
-# from app.utils.auth import create_access_token, get_current_user
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# TODO: Implement register endpoint
-@router.post("/register")
-def register_user():
-    """
-    Register a new user with Firebase UID
-    This should be called after Firebase authentication on the frontend
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+@router.post("/register", response_model=UserRead)
+def register(user_in: UserCreate, db: Session = Depends(get_db)):
+
+    if db.query(User).filter(User.email == user_in.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    if db.query(User).filter(User.username == user_in.username).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
     
-    Steps:
-    1. Check if user already exists (firebase_uid, email, or username)
-    2. Create new user in database
-    3. Return user data
-    """
-    pass
 
-# TODO: Implement login endpoint
-@router.post("/login")
-def login():
-    """
-    Login user and return JWT token
-    Frontend should call this after successful Firebase authentication
+    user = User(
+        firebase_uid=user_in.firebase_uid,
+        email=user_in.email,
+        username=user_in.username,
+        display_name=user_in.display_name,
+    )
+
+    if hasattr(user_in, "password") and user_in.password:
+        user.hashed_password = hash_password(user_in.password)
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+@router.post("/login", response_model=Token)
+def login(user_in: UserCreate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == user_in.email).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid credentials")
     
-    Steps:
-    1. Find user by firebase_uid
-    2. Create JWT access token
-    3. Return token
-    """
-    pass
+    if hasattr(user_in, "password") and user_in.password:
+        if not verify_password(user_in.password, getattr(user, "hashed_password", "")):
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+        
 
-# TODO: Implement get current user endpoint
-@router.get("/me")
-def get_current_user_info():
-    """
-    Get current authenticated user information
-    Requires authentication token in header
-    """
-    pass
+    access_token = create_access_token(data={"sub": user.firebase_uid})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@router.get("/me", response_model=UserRead)
+def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
